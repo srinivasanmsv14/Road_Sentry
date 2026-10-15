@@ -1,7 +1,6 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  distDir: ".next.nosync",
   allowedDevOrigins: [
     "172.20.47.129",
     "172.20.47.129:3000",
