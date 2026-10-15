@@ -24,14 +24,32 @@ interface ComplaintFormProps {
   onSuccessRedirect?: (id: string) => void;
 }
 
+let cachedIPCoords: { lat: number; lng: number } | null = null;
+
 const fetchIPGeolocation = async (): Promise<{ lat: number; lng: number } | null> => {
+  if (cachedIPCoords) return cachedIPCoords;
+  if (typeof window !== 'undefined') {
+    try {
+      const stored = sessionStorage.getItem('roadwatch_cached_ip_coords');
+      if (stored) {
+        cachedIPCoords = JSON.parse(stored);
+        return cachedIPCoords;
+      }
+    } catch {}
+  }
+
   // 1. Try freeipapi.com (Fast, free, reliable HTTPS)
   try {
     const res = await fetch('https://freeipapi.com/api/json/');
     if (res.ok) {
       const data = await res.json();
       if (data && typeof data.latitude === 'number' && typeof data.longitude === 'number') {
-        return { lat: data.latitude, lng: data.longitude };
+        const coords = { lat: Number(data.latitude.toFixed(5)), lng: Number(data.longitude.toFixed(5)) };
+        cachedIPCoords = coords;
+        if (typeof window !== 'undefined') {
+          try { sessionStorage.setItem('roadwatch_cached_ip_coords', JSON.stringify(coords)); } catch {}
+        }
+        return coords;
       }
     }
   } catch (err) {
@@ -44,7 +62,12 @@ const fetchIPGeolocation = async (): Promise<{ lat: number; lng: number } | null
     if (res.ok) {
       const data = await res.json();
       if (data && typeof data.latitude === 'number' && typeof data.longitude === 'number') {
-        return { lat: data.latitude, lng: data.longitude };
+        const coords = { lat: Number(data.latitude.toFixed(5)), lng: Number(data.longitude.toFixed(5)) };
+        cachedIPCoords = coords;
+        if (typeof window !== 'undefined') {
+          try { sessionStorage.setItem('roadwatch_cached_ip_coords', JSON.stringify(coords)); } catch {}
+        }
+        return coords;
       }
     }
   } catch (err) {
@@ -61,7 +84,12 @@ const fetchIPGeolocation = async (): Promise<{ lat: number; lng: number } | null
         const lat = parseFloat(latStr);
         const lng = parseFloat(lngStr);
         if (!isNaN(lat) && !isNaN(lng)) {
-          return { lat, lng };
+          const coords = { lat: Number(lat.toFixed(5)), lng: Number(lng.toFixed(5)) };
+          cachedIPCoords = coords;
+          if (typeof window !== 'undefined') {
+            try { sessionStorage.setItem('roadwatch_cached_ip_coords', JSON.stringify(coords)); } catch {}
+          }
+          return coords;
         }
       }
     }
@@ -249,8 +277,6 @@ export default function ComplaintForm({ preselectedRoadId = '', onSuccessRedirec
     setIsLocating(true);
     setErrors(prev => ({ ...prev, gps: '' }));
 
-    const isSecureContext = typeof window !== 'undefined' && window.isSecureContext;
-
     // Helper: resolve actual physical location from IP first, then stored preferred city
     const resolveFromFallback = async () => {
       // 1. Try IP Geolocation first to get actual physical coordinates
@@ -280,39 +306,36 @@ export default function ComplaintForm({ preselectedRoadId = '', onSuccessRedirec
       setIsLocating(false);
     };
 
-    // On HTTP (non-secure context), browser blocks GPS — skip directly to fallback
-    if (!isSecureContext || !navigator.geolocation) {
+    // If browser does not support geolocation, run fallback
+    if (!navigator.geolocation) {
       await resolveFromFallback();
       return;
     }
 
-    // Try real browser GPS with double-attempt (High Accuracy ➔ Standard Speed fallback)
+    // Try real browser GPS with standard high accuracy and generous 10s timeout
     navigator.geolocation.getCurrentPosition(
       (position) => {
         setLatitude(Number(position.coords.latitude.toFixed(5)));
         setLongitude(Number(position.coords.longitude.toFixed(5)));
         setIsLocating(false);
       },
-      async () => {
-        // High accuracy failed or timed out — try standard Wi-Fi/cellular triangulation
-        if (navigator.geolocation) {
-          navigator.geolocation.getCurrentPosition(
-            (pos) => {
-              setLatitude(Number(pos.coords.latitude.toFixed(5)));
-              setLongitude(Number(pos.coords.longitude.toFixed(5)));
-              setIsLocating(false);
-            },
-            async () => {
-              // Both browser methods failed — run IP-first fallback
-              await resolveFromFallback();
-            },
-            { enableHighAccuracy: false, timeout: 3000 }
-          );
-        } else {
-          await resolveFromFallback();
-        }
+      (err) => {
+        console.warn('High accuracy GPS error/timeout:', err);
+        // Fallback to standard cellular / Wi-Fi accuracy
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            setLatitude(Number(pos.coords.latitude.toFixed(5)));
+            setLongitude(Number(pos.coords.longitude.toFixed(5)));
+            setIsLocating(false);
+          },
+          async (err2) => {
+            console.warn('Standard geolocation failed, falling back to IP:', err2);
+            await resolveFromFallback();
+          },
+          { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 }
+        );
       },
-      { enableHighAccuracy: true, timeout: 3000 }
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
     );
   };
 

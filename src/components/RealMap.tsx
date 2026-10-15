@@ -110,14 +110,32 @@ const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeout 
   }
 };
 
+let cachedIPCoords: { lat: number; lng: number } | null = null;
+
 const fetchIPGeolocation = async (): Promise<{ lat: number; lng: number } | null> => {
+  if (cachedIPCoords) return cachedIPCoords;
+  if (typeof window !== 'undefined') {
+    try {
+      const stored = sessionStorage.getItem('roadwatch_cached_ip_coords');
+      if (stored) {
+        cachedIPCoords = JSON.parse(stored);
+        return cachedIPCoords;
+      }
+    } catch {}
+  }
+
   // 1. Try freeipapi.com (Fast, free, reliable HTTPS)
   try {
     const res = await fetchWithTimeout('https://freeipapi.com/api/json/', {}, 2000);
     if (res.ok) {
       const data = await res.json();
       if (data && typeof data.latitude === 'number' && typeof data.longitude === 'number') {
-        return { lat: data.latitude, lng: data.longitude };
+        const coords = { lat: Number(data.latitude.toFixed(5)), lng: Number(data.longitude.toFixed(5)) };
+        cachedIPCoords = coords;
+        if (typeof window !== 'undefined') {
+          try { sessionStorage.setItem('roadwatch_cached_ip_coords', JSON.stringify(coords)); } catch {}
+        }
+        return coords;
       }
     }
   } catch (err) {
@@ -130,7 +148,12 @@ const fetchIPGeolocation = async (): Promise<{ lat: number; lng: number } | null
     if (res.ok) {
       const data = await res.json();
       if (data && typeof data.latitude === 'number' && typeof data.longitude === 'number') {
-        return { lat: data.latitude, lng: data.longitude };
+        const coords = { lat: Number(data.latitude.toFixed(5)), lng: Number(data.longitude.toFixed(5)) };
+        cachedIPCoords = coords;
+        if (typeof window !== 'undefined') {
+          try { sessionStorage.setItem('roadwatch_cached_ip_coords', JSON.stringify(coords)); } catch {}
+        }
+        return coords;
       }
     }
   } catch (err) {
@@ -147,7 +170,12 @@ const fetchIPGeolocation = async (): Promise<{ lat: number; lng: number } | null
         const lat = parseFloat(latStr);
         const lng = parseFloat(lngStr);
         if (!isNaN(lat) && !isNaN(lng)) {
-          return { lat, lng };
+          const coords = { lat: Number(lat.toFixed(5)), lng: Number(lng.toFixed(5)) };
+          cachedIPCoords = coords;
+          if (typeof window !== 'undefined') {
+            try { sessionStorage.setItem('roadwatch_cached_ip_coords', JSON.stringify(coords)); } catch {}
+          }
+          return coords;
         }
       }
     }
@@ -319,15 +347,13 @@ function MapController({ center }: { center: [number, number] }) {
   const lastCenterRef = useRef<[number, number] | null>(null);
 
   useEffect(() => {
-    if (lastCenterRef.current) {
-      const dist = Math.abs(lastCenterRef.current[0] - center[0]) + Math.abs(lastCenterRef.current[1] - center[1]);
-      if (dist < 0.005) {
-        // Dragging map in small steps - let manual pans change coordinates smoothly without resetting map view
-        lastCenterRef.current = center;
-        return;
-      }
+    const current = map.getCenter();
+    const dist = Math.abs(current.lat - center[0]) + Math.abs(current.lng - center[1]);
+    if (dist < 0.0001) {
+      // Map is already positioned at these coordinates (e.g. from user drag)
+      return;
     }
-    
+
     lastCenterRef.current = center;
     map.invalidateSize();
     const targetZoom = map.getZoom() < 14 ? 15 : map.getZoom();
@@ -337,18 +363,18 @@ function MapController({ center }: { center: [number, number] }) {
   return null;
 }
 
-// Controller to sync map movement center back to form coordinates
+// Controller to sync map movement center back to form coordinates when user drags the map
 function MapCenterSync({ onCoordinatesChange, enabled }: { onCoordinatesChange?: (coords: { lat: number; lng: number }) => void; enabled: boolean }) {
   const map = useMap();
 
   useMapEvents({
-    move() {
+    drag() {
       if (enabled && onCoordinatesChange) {
         const center = map.getCenter();
         onCoordinatesChange({ lat: Number(center.lat.toFixed(5)), lng: Number(center.lng.toFixed(5)) });
       }
     },
-    moveend() {
+    dragend() {
       if (enabled && onCoordinatesChange) {
         const center = map.getCenter();
         onCoordinatesChange({ lat: Number(center.lat.toFixed(5)), lng: Number(center.lng.toFixed(5)) });
@@ -441,7 +467,7 @@ function MapClickHandler({ onClick }: { onClick: (coords: { lat: number; lng: nu
   return null;
 }
 
-function MapTypeControl({ mapType, setMapType }: { mapType: 'roadmap' | 'satellite'; setMapType: (type: 'roadmap' | 'satellite') => void }) {
+function MapTypeControl({ mapType, setMapType }: { mapType: 'roadmap' | 'satellite' | 'osm'; setMapType: (type: 'roadmap' | 'satellite' | 'osm') => void }) {
   return (
     <div className="absolute bottom-8 right-4 z-[1000] bg-white/95 dark:bg-slate-950/95 rounded-xl p-1 border border-slate-200 dark:border-slate-800 shadow-2xl flex gap-1 backdrop-blur-md">
       <button
@@ -453,15 +479,15 @@ function MapTypeControl({ mapType, setMapType }: { mapType: 'roadmap' | 'satelli
         className={`px-3 py-1.5 rounded-lg text-[9px] font-black uppercase transition-all ${
           mapType === 'roadmap'
             ? 'text-white shadow-md animate-none'
-            : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-250'
+            : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
         }`}
         style={
           mapType === 'roadmap'
-            ? { backgroundColor: '#4b5563', color: '#ffffff' }
+            ? { backgroundColor: '#2563eb', color: '#ffffff' }
             : undefined
         }
       >
-        GMaps Light
+        GMaps Road
       </button>
       <button
         type="button"
@@ -472,19 +498,39 @@ function MapTypeControl({ mapType, setMapType }: { mapType: 'roadmap' | 'satelli
         className={`px-3 py-1.5 rounded-lg text-[9px] font-black uppercase transition-all ${
           mapType === 'satellite'
             ? 'text-white shadow-md animate-none'
-            : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-250'
+            : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
         }`}
         style={
           mapType === 'satellite'
-            ? { backgroundColor: '#4b5563', color: '#ffffff' }
+            ? { backgroundColor: '#2563eb', color: '#ffffff' }
             : undefined
         }
       >
         GMaps Satellite
       </button>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setMapType('osm');
+        }}
+        className={`px-3 py-1.5 rounded-lg text-[9px] font-black uppercase transition-all ${
+          mapType === 'osm'
+            ? 'text-white shadow-md animate-none'
+            : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+        }`}
+        style={
+          mapType === 'osm'
+            ? { backgroundColor: '#2563eb', color: '#ffffff' }
+            : undefined
+        }
+      >
+        OSM Streets
+      </button>
     </div>
   );
 }
+
 
 // CITIES list is imported from ../data/mockData
 
@@ -621,30 +667,8 @@ export default function RealMap({
   isLoadingRoads = false,
   showLocateButton = true
 }: RealMapProps) {
-  const [mapType, setMapType] = useState<'roadmap' | 'satellite'>('roadmap');
+  const [mapType, setMapType] = useState<'roadmap' | 'satellite' | 'osm'>('roadmap');
   const [errorMessage, setErrorMessage] = useState('');
-  const [tileUrl, setTileUrl] = useState('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png');
-
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const observer = new MutationObserver(() => {
-        const isDark = document.documentElement.classList.contains('dark');
-        setTileUrl(isDark 
-          ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png' 
-          : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png'
-        );
-      });
-      observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
-      
-      const isDark = document.documentElement.classList.contains('dark');
-      setTileUrl(isDark 
-        ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png' 
-        : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png'
-      );
-      
-      return () => observer.disconnect();
-    }
-  }, []);
   
   const [selectedCity, setSelectedCity] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -791,7 +815,7 @@ export default function RealMap({
         zoom={selectedCity ? 12 : 11}
         className="w-full h-full"
         style={{ 
-          background: tileUrl.includes('dark') ? '#111827' : '#f3f4f6', 
+          background: mapType === 'satellite' ? '#0b0f19' : '#f8fafc', 
           height: '100%', 
           minHeight: !draggablePosition ? '400px' : '100%' 
         }}
@@ -816,14 +840,24 @@ export default function RealMap({
           />
         )}
 
-        {/* Google Maps Theme Tile Provider with Switcher */}
+        {/* Google Maps / OSM Tile Provider with Switcher */}
         <MapTypeControl mapType={mapType} setMapType={setMapType} />
 
         <TileLayer
-          attribution={mapType === 'roadmap' ? "&copy; OpenStreetMap &copy; CartoDB" : "&copy; Google Maps"}
-          url={mapType === 'roadmap' 
-            ? tileUrl 
-            : "https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"}
+          key={mapType}
+          attribution={
+            mapType === 'osm'
+              ? '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+              : '&copy; Google Maps'
+          }
+          url={
+            mapType === 'roadmap'
+              ? 'https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}'
+              : mapType === 'satellite'
+              ? 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}'
+              : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
+          }
+          maxZoom={20}
         />
 
         {/* Selected Road center/bounds controller */}
